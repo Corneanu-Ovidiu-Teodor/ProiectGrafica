@@ -2,55 +2,50 @@
 #include <iostream>
 #include <math.h>
 
-// Asta include biblioteca stb_image direct in cod, fara fisiere .lib externe!
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-// --- VARIABILELE MELE GLOBALE ---
-// La P3 o sa folosesc variabilele astea ca sa ma plimb pe circuit cu camera. 
-// Momentan doar se invarte in cerc ca sa vad P1.
+#define PI 3.14159265f
+
+// --- VARIABILELE GLOBALE ---
 float unghiCamera = 0.0f;
 float razaCamera = 60.0f;
 
-// Aici salvez ID-urile pentru pozele incarcate in placa video
+// Texturi
 GLuint texturaIarba;
-GLuint texturaSkybox[6]; // Vector pentru cele 6 fete ale cerului (cubului)
+GLuint texturaSkybox[6];
+GLuint texturaAsfalt;
+GLuint texturaCladire;
 
-// Aici tin minte datele despre poza alb-negru din care generez dealurile
+// Heightmap
 unsigned char* heightmapData = nullptr;
 int hmLatime, hmInaltime, hmCanale;
 
-// --- FUNCTIA CARE IMI INCARCA O POZA DE PE DISK IN OPENGL ---
-// 'repeta' e true la iarba (ca sa fie gresie la infinit) si false la cer (ca sa intind marginile)
+// --- INCARCAREA TEXTURILOR (Varianta ultra-sigura pentru memorie) ---
 GLuint incarcaTextura(const char* numeFisier, bool repeta = true) {
     GLuint texturaID;
     glGenTextures(1, &texturaID);
     glBindTexture(GL_TEXTURE_2D, texturaID);
 
     int width, height, nrChannels;
-    // Citesc poza efectiv
-    unsigned char* data = stbi_load(numeFisier, &width, &height, &nrChannels, 0);
+
+    // Fortam 4 canale (RGBA) pentru a evita orice eroare de memorie cu poze ciudate
+    unsigned char* data = stbi_load(numeFisier, &width, &height, &nrChannels, 4);
 
     if (data) {
-        // Imi dau seama daca poza are sau nu transparenta (Alpha)
-        GLenum format = GL_RGB;
-        if (nrChannels == 4) format = GL_RGBA;
-        if (nrChannels == 1) format = GL_LUMINANCE; // Pentru poze alb-negru
+        // PREVINE CRASH-UL (Eroarea 0xc0000005)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-        // Trimit poza in placa video
-        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
 
-        // Filtrare: blureaza finut pixelii ca sa nu se vada patratos cand ma apropii
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
         if (repeta) {
-            // Repet poza (GL_REPEAT)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         }
         else {
-            // Intind poza spre margini (GL_CLAMP_TO_EDGE) - Definit manual in caz ca crapa pe PC-uri vechi
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F
 #endif
@@ -59,25 +54,27 @@ GLuint incarcaTextura(const char* numeFisier, bool repeta = true) {
         }
     }
     else {
-        // Daca am uitat sa pun poza in folder sau am gresit numele, imi da eroare in consola
         std::cout << "Eroare: Nu am gasit fisierul -> " << numeFisier << std::endl;
     }
-    stbi_image_free(data); // Eliberez memoria RAM ca sa nu crape PC-ul
+
+    stbi_image_free(data);
     return texturaID;
 }
 
-// --- AICI INCARC TOATE ASSET-URILE LA INCEPUT DE PROGRAM ---
 void initializare() {
-    glEnable(GL_DEPTH_TEST); // Activez 3D-ul (ca obiectele din fata sa le acopere pe alea din spate)
-    glEnable(GL_TEXTURE_2D); // Ii zic la OpenGL ca vreau sa folosesc poze
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_TEXTURE_2D);
 
-    // Iarba trebuie intoarsa ca s-o citeasca corect OpenGL-ul
+    std::cout << "-> Incarc textura iarba..." << std::endl;
     stbi_set_flip_vertically_on_load(true);
-    texturaIarba = incarcaTextura("iarba.jpg", true); // Bifez 'true' ca sa se repete la infinit
+    texturaIarba = incarcaTextura("iarba.jpg", true);
 
-    // Incarc cerul. Astea 6 NU trebuie intoarse, altfel arata ciudat
+    std::cout << "-> Incarc texturile noi (asfalt, cladire)..." << std::endl;
+    texturaAsfalt = incarcaTextura("asfalt.jpg", true);
+    texturaCladire = incarcaTextura("cladire.jpg", true);
+
+    std::cout << "-> Incarc Skybox-ul..." << std::endl;
     stbi_set_flip_vertically_on_load(false);
-    // Atentie: Daca ecranul e negru, inseamna ca am gresit vreo litera in numele astea:
     texturaSkybox[0] = incarcaTextura("Daylight Box_Front.bmp", false);
     texturaSkybox[1] = incarcaTextura("Daylight Box_Back.bmp", false);
     texturaSkybox[2] = incarcaTextura("Daylight Box_Left.bmp", false);
@@ -85,45 +82,165 @@ void initializare() {
     texturaSkybox[4] = incarcaTextura("Daylight Box_Top.bmp", false);
     texturaSkybox[5] = incarcaTextura("Daylight Box_Bottom.bmp", false);
 
-    // Incarc poza alb-negru pentru relief
+    std::cout << "-> Incarc harta de relief..." << std::endl;
     stbi_set_flip_vertically_on_load(true);
-    // Fortez 1 canal ca sa o citeasca fix alb-negru
     heightmapData = stbi_load("Rolling Hills Height Map.png", &hmLatime, &hmInaltime, &hmCanale, 1);
     if (!heightmapData) {
         std::cout << "Eroare: Nu am gasit 'Rolling Hills Height Map.png'!" << std::endl;
     }
 }
 
-// --- SMECHERIA PENTRU RELIEF ---
+// --- FUNCTIA CARE IMI DA INALTIMEA TERENULUI ---
 float obtineInaltimeDinHarta(float x, float z) {
-    // Daca n-a gasit poza de relief, fac terenul perfect plat la inaltimea 0
     if (!heightmapData) return 0.0f;
 
-    // Transform coordonatele mele din joc (ex: -50..50) in coordonate de pe poza (ex: pixelul 20, 30)
     float u = (x + 50.0f) / 100.0f;
     float v = (z + 50.0f) / 100.0f;
 
     int px = u * (hmLatime - 1);
     int pz = v * (hmInaltime - 1);
 
-    // Ma asigur ca nu citesc pe langa poza ca imi iau crash instant
     if (px < 0) px = 0; if (px >= hmLatime) px = hmLatime - 1;
     if (pz < 0) pz = 0; if (pz >= hmInaltime) pz = hmInaltime - 1;
 
-    // Aflu cat de "alb" e pixelul. 0 e negru complet (vale), 255 e alb complet (munte)
     unsigned char culoarePixel = heightmapData[pz * hmLatime + px];
-
-    // Convertesc pixelul in inaltime reala (max 15 metri in joc)
     return (culoarePixel / 255.0f) * 15.0f;
 }
 
-// --- DESENEZ CUBUL IN CARE STAU (SKYBOX) ---
-void deseneazaSkybox() {
-    float d = 100.0f; // Cat de mare e cubul. Sa fie destul cat sa incapa harta in el.
-    glColor3f(1.0f, 1.0f, 1.0f); // IMPORTANT: Culoarea trebuie sa fie alba ca pozele sa ramana la culorile lor!
+// ==========================================
+// P2: NOILE COMPONENTE (CIRCUIT SI OBIECTE)
+// ==========================================
 
-    // Lipesc pozele pe fiecare perete in parte. coordonata (0,0) din poza pusa pe colturile patratului.
-    glBindTexture(GL_TEXTURE_2D, texturaSkybox[1]); // Spate
+void deseneazaCircuit() {
+    glBindTexture(GL_TEXTURE_2D, texturaAsfalt);
+    glColor3f(1.0f, 1.0f, 1.0f);
+
+    float razaMica = 25.0f;
+    float razaMare = 32.0f;
+    int segmente = 100;
+
+    glBegin(GL_QUAD_STRIP);
+    for (int i = 0; i <= segmente; i++) {
+        float unghi = (2.0f * PI * i) / segmente;
+
+        float xIn = cos(unghi) * razaMica;
+        float zIn = sin(unghi) * razaMica;
+        float xOut = cos(unghi) * razaMare;
+        float zOut = sin(unghi) * razaMare;
+
+        // Ridicam circuitul mai sus (0.8f) ca sa evitam intrepatrunderea ierbii cu asfaltul
+        float yIn = obtineInaltimeDinHarta(xIn, zIn) + 0.8f;
+        float yOut = obtineInaltimeDinHarta(xOut, zOut) + 0.8f;
+
+        glTexCoord2f(i * 0.2f, 0.0f); glVertex3f(xIn, yIn, zIn);
+        glTexCoord2f(i * 0.2f, 1.0f); glVertex3f(xOut, yOut, zOut);
+    }
+    glEnd();
+}
+
+void deseneazaCopac(float x, float z) {
+    float y = obtineInaltimeDinHarta(x, z);
+
+    glPushMatrix();
+    glTranslatef(x, y, z);
+
+    glDisable(GL_TEXTURE_2D);
+
+    // Trunchiul copacului
+    glColor3f(0.4f, 0.2f, 0.0f);
+    glPushMatrix();
+    glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
+    glutSolidCone(0.5, 2.0, 10, 2);
+    glPopMatrix();
+
+    // Coroana bradului
+    glColor3f(0.1f, 0.5f, 0.1f);
+    glTranslatef(0.0f, 1.5f, 0.0f);
+    glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
+    glutSolidCone(2.0, 4.0, 10, 2);
+
+    glEnable(GL_TEXTURE_2D);
+    glPopMatrix();
+}
+
+void deseneazaCladire(float x, float z, float latime, float inaltime, float adancime) {
+    float y = obtineInaltimeDinHarta(x, z);
+
+    glBindTexture(GL_TEXTURE_2D, texturaCladire);
+    glColor3f(1.0f, 1.0f, 1.0f);
+
+    glPushMatrix();
+    glTranslatef(x, y, z);
+
+    // Peretii cladirii
+    glBegin(GL_QUADS);
+    // Fata
+    glTexCoord2f(0.0f, 0.0f); glVertex3f(-latime, 0, adancime);
+    glTexCoord2f(1.0f, 0.0f); glVertex3f(latime, 0, adancime);
+    glTexCoord2f(1.0f, 1.0f); glVertex3f(latime, inaltime, adancime);
+    glTexCoord2f(0.0f, 1.0f); glVertex3f(-latime, inaltime, adancime);
+    // Spate
+    glTexCoord2f(0.0f, 0.0f); glVertex3f(-latime, 0, -adancime);
+    glTexCoord2f(1.0f, 0.0f); glVertex3f(latime, 0, -adancime);
+    glTexCoord2f(1.0f, 1.0f); glVertex3f(latime, inaltime, -adancime);
+    glTexCoord2f(0.0f, 1.0f); glVertex3f(-latime, inaltime, -adancime);
+    // Stanga
+    glTexCoord2f(0.0f, 0.0f); glVertex3f(-latime, 0, -adancime);
+    glTexCoord2f(1.0f, 0.0f); glVertex3f(-latime, 0, adancime);
+    glTexCoord2f(1.0f, 1.0f); glVertex3f(-latime, inaltime, adancime);
+    glTexCoord2f(0.0f, 1.0f); glVertex3f(-latime, inaltime, -adancime);
+    // Dreapta
+    glTexCoord2f(0.0f, 0.0f); glVertex3f(latime, 0, -adancime);
+    glTexCoord2f(1.0f, 0.0f); glVertex3f(latime, 0, adancime);
+    glTexCoord2f(1.0f, 1.0f); glVertex3f(latime, inaltime, adancime);
+    glTexCoord2f(0.0f, 1.0f); glVertex3f(latime, inaltime, -adancime);
+    glEnd();
+
+    // Acoperisul 
+    glDisable(GL_TEXTURE_2D);
+    glColor3f(0.2f, 0.2f, 0.2f); // Culoare gri inchis
+    glBegin(GL_QUADS);
+    glVertex3f(-latime, inaltime, -adancime);
+    glVertex3f(latime, inaltime, -adancime);
+    glVertex3f(latime, inaltime, adancime);
+    glVertex3f(-latime, inaltime, adancime);
+    glEnd();
+
+    // Pornim pozele la loc pentru restul lumii si resetam culoarea
+    glEnable(GL_TEXTURE_2D);
+    glColor3f(1.0f, 1.0f, 1.0f);
+
+    glPopMatrix();
+}
+
+void deseneazaLumeaStatica() {
+    // Cladiri
+    deseneazaCladire(0.0f, 0.0f, 3.0f, 10.0f, 3.0f);
+    deseneazaCladire(15.0f, 5.0f, 2.0f, 6.0f, 2.0f);
+    deseneazaCladire(-10.0f, 15.0f, 4.0f, 5.0f, 4.0f);
+    deseneazaCladire(-38.0f, -38.0f, 2.5f, 8.0f, 2.5f);
+    deseneazaCladire(40.0f, -10.0f, 2.0f, 7.0f, 3.0f);
+
+    // Copaci
+    deseneazaCopac(5.0f, -10.0f);
+    deseneazaCopac(8.0f, -12.0f);
+    deseneazaCopac(6.0f, -14.0f);
+
+    deseneazaCopac(-20.0f, -5.0f);
+    deseneazaCopac(-40.0f, 20.0f);
+    deseneazaCopac(35.0f, 35.0f);
+    deseneazaCopac(-5.0f, 40.0f);
+}
+
+// ==========================================
+// P1: BAZA VECHE (SKYBOX SI TEREN)
+// ==========================================
+
+void deseneazaSkybox() {
+    float d = 100.0f;
+    glColor3f(1.0f, 1.0f, 1.0f);
+
+    glBindTexture(GL_TEXTURE_2D, texturaSkybox[1]);
     glBegin(GL_QUADS);
     glTexCoord2f(1.0f, 0.0f); glVertex3f(-d, -d, -d);
     glTexCoord2f(0.0f, 0.0f); glVertex3f(d, -d, -d);
@@ -131,7 +248,7 @@ void deseneazaSkybox() {
     glTexCoord2f(1.0f, 1.0f); glVertex3f(-d, d, -d);
     glEnd();
 
-    glBindTexture(GL_TEXTURE_2D, texturaSkybox[0]); // Fata
+    glBindTexture(GL_TEXTURE_2D, texturaSkybox[0]);
     glBegin(GL_QUADS);
     glTexCoord2f(0.0f, 0.0f); glVertex3f(-d, -d, d);
     glTexCoord2f(1.0f, 0.0f); glVertex3f(d, -d, d);
@@ -139,7 +256,7 @@ void deseneazaSkybox() {
     glTexCoord2f(0.0f, 1.0f); glVertex3f(-d, d, d);
     glEnd();
 
-    glBindTexture(GL_TEXTURE_2D, texturaSkybox[2]); // Stanga
+    glBindTexture(GL_TEXTURE_2D, texturaSkybox[2]);
     glBegin(GL_QUADS);
     glTexCoord2f(1.0f, 0.0f); glVertex3f(-d, -d, d);
     glTexCoord2f(0.0f, 0.0f); glVertex3f(-d, -d, -d);
@@ -147,7 +264,7 @@ void deseneazaSkybox() {
     glTexCoord2f(1.0f, 1.0f); glVertex3f(-d, d, d);
     glEnd();
 
-    glBindTexture(GL_TEXTURE_2D, texturaSkybox[3]); // Dreapta
+    glBindTexture(GL_TEXTURE_2D, texturaSkybox[3]);
     glBegin(GL_QUADS);
     glTexCoord2f(0.0f, 0.0f); glVertex3f(d, -d, d);
     glTexCoord2f(1.0f, 0.0f); glVertex3f(d, -d, -d);
@@ -155,7 +272,7 @@ void deseneazaSkybox() {
     glTexCoord2f(0.0f, 1.0f); glVertex3f(d, d, d);
     glEnd();
 
-    glBindTexture(GL_TEXTURE_2D, texturaSkybox[4]); // Sus (Cerul vizibil efectiv)
+    glBindTexture(GL_TEXTURE_2D, texturaSkybox[4]);
     glBegin(GL_QUADS);
     glTexCoord2f(0.0f, 1.0f); glVertex3f(-d, d, -d);
     glTexCoord2f(1.0f, 1.0f); glVertex3f(d, d, -d);
@@ -164,24 +281,19 @@ void deseneazaSkybox() {
     glEnd();
 }
 
-// --- DESENEZ PODEAUA (RELIEFUL) ---
 void deseneazaRelief() {
     glBindTexture(GL_TEXTURE_2D, texturaIarba);
     glColor3f(1.0f, 1.0f, 1.0f);
 
-    // Fac un gratar (grid) urias din 2 in 2 metri (de la -50 la +50)
     glBegin(GL_QUADS);
     for (float x = -50.0f; x < 50.0f; x += 2.0f) {
         for (float z = -50.0f; z < 50.0f; z += 2.0f) {
 
-            // Intreb functia mea inalta cat de sus trebuie pus fiecare din cele 4 colturi ale patratelului
             float y1 = obtineInaltimeDinHarta(x, z);
             float y2 = obtineInaltimeDinHarta(x + 2.0f, z);
             float y3 = obtineInaltimeDinHarta(x + 2.0f, z + 2.0f);
             float y4 = obtineInaltimeDinHarta(x, z + 2.0f);
 
-            // Inmultesc coordonatele cu 10. Asta face iarba sa para marunta si detaliata. 
-            // Daca o lasam simpla, se vedea o poza uriasa blurata pe tot muntele.
             float texScale = 10.0f / 100.0f;
 
             glTexCoord2f((x + 50) * texScale, (z + 50) * texScale); glVertex3f(x, y1, z);
@@ -193,63 +305,63 @@ void deseneazaRelief() {
     glEnd();
 }
 
-// --- BUCLE DE RANDARE ---
+// --- FUNCTIA CENTRALA DE DESENARE A CADRULUI ---
 void renderScene(void) {
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // Sterg cadrul vechi
-    glLoadIdentity(); // Resetez camera
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glLoadIdentity();
 
-    // La P1 doar ma invart deasupra hartii in cerc
     float camX = sin(unghiCamera) * razaCamera;
     float camZ = cos(unghiCamera) * razaCamera;
-    float camY = 25.0f; // Ma uit putin de sus
+    float camY = 35.0f;
 
-    // Ochii mei virtuali
     gluLookAt(
-        camX, camY, camZ,       // De unde ma uit
-        0.0f, 5.0f, 0.0f,       // La ce ma uit (in centrul ecranului)
-        0.0f, 1.0f, 0.0f        // Unde e cerul (axa Y)
+        camX, camY, camZ,
+        0.0f, 5.0f, 0.0f,
+        0.0f, 1.0f, 0.0f
     );
 
-    // Pun obiectele in scena
     deseneazaSkybox();
     deseneazaRelief();
+    deseneazaCircuit();
+    deseneazaLumeaStatica();
 
-    glutSwapBuffers(); // Arata poza pe monitor
+    glutSwapBuffers();
 }
 
-// Functie necesara ca sa nu se turteasca imaginea cand fac fereastra mai mica/mare
 void changeSize(int w, int h) {
     if (h == 0) h = 1;
     float ratio = w * 1.0 / h;
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glViewport(0, 0, w, h);
-    // 250 e cat de departe pot sa vad. Daca era mai mic (ex: 100), se taiau muntii din departare.
     gluPerspective(45.0f, ratio, 0.1f, 250.0f);
     glMatrixMode(GL_MODELVIEW);
 }
 
-// Aici mut camera la fiecare "tic" ca sa se invarta singura
 void animate() {
-    unghiCamera += 0.002f; // Daca ma misc prea repede sau incet, modific aici!
-    glutPostRedisplay(); // Zic placii video sa mai randeze un cadru
+    unghiCamera += 0.002f;
+    glutPostRedisplay();
 }
 
 int main(int argc, char** argv) {
-    // Setari default freeglut
+    std::cout << "[1] Programul a pornit cu succes!" << std::endl;
+
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DEPTH | GLUT_DOUBLE | GLUT_RGBA);
     glutInitWindowPosition(100, 100);
     glutInitWindowSize(1024, 768);
-    glutCreateWindow("Proiect Grafica - P1 (Relief si Skybox)");
+    glutCreateWindow("Proiect Grafica - P1 + P2");
 
-    initializare(); // Incarc pozele inainte sa incep sa desenez
+    std::cout << "[2] Fereastra creata. Incep incarcarea pozelor..." << std::endl;
 
-    // Asociez functiile mele cu freeglut
+    initializare();
+
+    std::cout << "[3] Toate pozele incarcate. Pornesc bucla 3D!" << std::endl;
+
     glutDisplayFunc(renderScene);
     glutReshapeFunc(changeSize);
-    glutIdleFunc(animate); // Cand PC-ul n-are ce face, sa invarta camera
+    glutIdleFunc(animate);
 
-    glutMainLoop(); // Porneste efectiv aplicatia
+    glutMainLoop();
     return 0;
 }
